@@ -1,0 +1,8 @@
+<launch>
+  <node pkg="nodelet" type="nodelet" name="rf2o_nodelet_manager" args="manager" output="screen">
+      <rosparam file="$(find rf2o_laser_odometry)/config/rf2oNodeletParams.yaml"/>
+  </node>
+
+  <node pkg="nodelet" type="nodelet" name="rf2o_laser_odometry" args="load rf2o_laser_odometry/rf2oNodelet rf2o_nodelet_manager" output="screen">
+  </node>
+</launch>

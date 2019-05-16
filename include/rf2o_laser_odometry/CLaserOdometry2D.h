@@ -13,6 +13,7 @@
 * MAPIR group: http://mapir.isa.uma.es/
 *
 * Modifications: Jeremie Deray
+* Modifications: Greg Langer
 ******************************************************************************************** */
 
 #ifndef CLaserOdometry2D_H
@@ -125,6 +126,7 @@ protected:
 
   MatrixS31 Var;	//3 unknowns: vx, vy, w
   IncrementCov cov_odo;
+  IncrementCov update_cov;
 
   //std::string LaserVarName;				//Name of the topic containing the scan lasers \laser_scan
   float fps;								//In Hz

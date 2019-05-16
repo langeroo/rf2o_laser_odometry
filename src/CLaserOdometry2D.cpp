@@ -13,6 +13,7 @@
 * MAPIR group: http://mapir.isa.uma.es/
 *
 * Modifications: Jeremie Deray
+* Modifications: Greg Langer
 ******************************************************************************************** */
 
 #include "rf2o_laser_odometry/CLaserOdometry2D.h"
@@ -35,7 +36,6 @@ CLaserOdometry2D::CLaserOdometry2D() :
   robot_pose_(Pose3d::Identity()),
   robot_oldpose_(Pose3d::Identity())
 {
-  //
 }
 
 void CLaserOdometry2D::setLaserPose(const Pose3d& laser_pose)
@@ -141,6 +141,7 @@ void CLaserOdometry2D::init(const sensor_msgs::LaserScan& scan,
 
   null    = Eigen::MatrixXi::Constant(1, cols, 0);
   cov_odo = IncrementCov::Zero();
+  update_cov = IncrementCov::Zero();
 
   fps = 1.f;		//In Hz
   num_valid_range = 0;
@@ -156,7 +157,7 @@ void CLaserOdometry2D::init(const sensor_msgs::LaserScan& scan,
   kai_loc_old_ = MatrixS31::Zero();
 
   module_initialized = true;
-  last_odom_time = ros::Time::now();
+  last_odom_time = scan.header.stamp;
 }
 
 const CLaserOdometry2D::Pose3d& CLaserOdometry2D::getIncrement() const
@@ -191,6 +192,8 @@ bool CLaserOdometry2D::odometryCalculation(const sensor_msgs::LaserScan& scan)
   ros::WallTime start = ros::WallTime::now();
 
   createImagePyramid();
+
+  update_cov = IncrementCov::Zero();
 
   //Coarse-to-fine scheme
   for (unsigned int i=0; i<ctf_levels; i++)
@@ -245,6 +248,9 @@ bool CLaserOdometry2D::odometryCalculation(const sensor_msgs::LaserScan& scan)
       continue;
     }
 
+    // 7.5. Stack the image pyramid covariances
+    update_cov += CLaserOdometry2D::getIncrementCovariance();
+
     //8. Filter solution
     if (!filterLevelSolution()) return false;
   }
@@ -292,7 +298,7 @@ void CLaserOdometry2D::createImagePyramid()
         //Inner pixels
         if ((u>1)&&(u<cols_i-2))
         {
-          if (dcenter > 0.f)
+          if (std::isfinite(dcenter) && dcenter > 0.f)
           {
             float sum = 0.f;
             float weight = 0.f;
@@ -316,7 +322,7 @@ void CLaserOdometry2D::createImagePyramid()
         //Boundary
         else
         {
-          if (dcenter > 0.f)
+          if (std::isfinite(dcenter) && dcenter > 0.f)
           {
             float sum = 0.f;
             float weight = 0.f;
@@ -324,7 +330,7 @@ void CLaserOdometry2D::createImagePyramid()
             for (int l=-2; l<3; l++)
             {
               const int indu = u+l;
-              if ((indu>=0)&&(indu<cols_i))
+              if ((indu>=0)&&(indu<(int)cols_i))
               {
                 const float abs_dif = std::abs(range_wf(indu)-dcenter);
                 if (abs_dif < max_range_dif)
@@ -390,7 +396,7 @@ void CLaserOdometry2D::createImagePyramid()
             for (int l=-2; l<3; l++)
             {
               const int indu = u2+l;
-              if ((indu>=0)&&(indu<cols_i2))
+              if ((indu>=0)&&(indu<(int)cols_i2))
               {
                 const float abs_dif = std::abs(range[i_1](indu)-dcenter);
                 if (abs_dif < max_range_dif)
@@ -481,28 +487,6 @@ void CLaserOdometry2D::calculaterangeDerivativesSurface()
   for (unsigned int u = 0; u < cols_i; u++)
     dt(u) = fps*(range_warped[image_level](u) - range_old[image_level](u));
 
-
-  //Apply median filter to the range derivatives
-  //MatrixXf dtitamed = dtita, dtmed = dt;
-  //vector<float> svector(3);
-  //for (unsigned int u=1; u<cols_i-1; u++)
-  //{
-  //	svector.at(0) = dtita(u-1); svector.at(1) = dtita(u); svector.at(2) = dtita(u+1);
-  //	std::sort(svector.begin(), svector.end());
-  //	dtitamed(u) = svector.at(1);
-
-  //	svector.at(0) = dt(u-1); svector.at(1) = dt(u); svector.at(2) = dt(u+1);
-  //	std::sort(svector.begin(), svector.end());
-  //	dtmed(u) = svector.at(1);
-  //}
-
-  //dtitamed(0) = dtitamed(1);
-  //dtitamed(cols_i-1) = dtitamed(cols_i-2);
-  //dtmed(0) = dtmed(1);
-  //dtmed(cols_i-1) = dtmed(cols_i-2);
-
-  //dtitamed.swap(dtita);
-  //dtmed.swap(dt);
 }
 
 void CLaserOdometry2D::computeNormals()
@@ -659,8 +643,6 @@ void CLaserOdometry2D::solveSystemNonLinear()
   //Covariance matrix calculation 	Cov Order -> vx,vy,wz
   Eigen::MatrixXf res(num_valid_range,1);
   res = A*Var - B;
-  //cout << endl << "max res: " << res.maxCoeff();
-  //cout << endl << "min res: " << res.minCoeff();
 
   ////Compute the energy
   //Compute the average dt
@@ -676,11 +658,7 @@ void CLaserOdometry2D::solveSystemNonLinear()
 
 
   const float k = 10.f/aver_dt; //200
-  //float energy = 0.f;
-  //for (unsigned int i=0; i<res.rows(); i++)
-  //	energy += log(1.f + mrpt::math::square(k*res(i)));
-  //printf("\n\nEnergy(0) = %f", energy);
-
+  
   //Solve iterative reweighted least squares
   //===================================================================
   for (unsigned int i=1; i<=iter_irls; i++)
@@ -706,17 +684,12 @@ void CLaserOdometry2D::solveSystemNonLinear()
     Var = AtA.ldlt().solve(AtB);
     res = A*Var - B;
 
-    ////Compute the energy
-    //energy = 0.f;
-    //for (unsigned int j=0; j<res.rows(); j++)
-    //	energy += log(1.f + mrpt::math::square(k*res(j)));
-    //printf("\nEnergy(%d) = %f", i, energy);
   }
 
   cov_odo = (1.f/float(num_valid_range-3))*AtA.inverse()*res.squaredNorm();
   kai_loc_level_ = Var;
 
-  ROS_INFO_STREAM_COND(verbose && false, "[rf2o] COV_ODO:\n" << cov_odo);
+  // ROS_INFO_STREAM_COND(verbose && false, "[rf2o] COV_ODO:\n" << cov_odo);
 }
 
 void CLaserOdometry2D::Reset(const Pose3d& ini_pose/*, CObservation2DRangeScan scan*/)
@@ -858,7 +831,6 @@ bool CLaserOdometry2D::filterLevelSolution()
   for (unsigned int i=0; i<3; i++)
   {
     kai_b_fil(i) = (kai_b(i) + (cf*eigensolver.eigenvalues()(i,0) + df)*kai_b_old(i))/(1.f + cf*eigensolver.eigenvalues()(i,0) + df);
-    //kai_b_fil_f(i,0) = (1.f*kai_b(i,0) + 0.f*kai_b_old_f(i,0))/(1.0f + 0.f);
   }
 
   //Transform filtered speed to local reference frame and compute transformation
@@ -903,8 +875,6 @@ void CLaserOdometry2D::PoseUpdate()
     kai_loc_(2) = fps*std::acos(acu_trans(0,0))*rf2o::sign(acu_trans(1,0));
   }
 
-  //cout << endl << "Arc cos (incr tita): " << kai_loc_(2);
-
   float phi = rf2o::getYaw(laser_pose_.rotation());
 
   kai_abs_(0) = kai_loc_(0)*std::cos(phi) - kai_loc_(1)*std::sin(phi);
@@ -942,7 +912,7 @@ void CLaserOdometry2D::PoseUpdate()
   //Compose Transformations
   robot_pose_ = laser_pose_ * laser_pose_on_robot_inv_;
 
-  ROS_INFO_COND(verbose, "BASEodom = [%f %f %f]",
+  ROS_INFO_COND(verbose, "[rf2o] BASEodom = [%f %f %f]",
                 robot_pose_.translation()(0),
                 robot_pose_.translation()(1),
                 rf2o::getYaw(robot_pose_.rotation()));
@@ -967,20 +937,6 @@ void CLaserOdometry2D::PoseUpdate()
   ang_speed = ang_inc/time_inc_sec;
   robot_oldpose_ = robot_pose_;
 
-  //filter speeds
-  /*
-    last_m_lin_speeds.push_back(lin_speed);
-    if (last_m_lin_speeds.size()>4)
-        last_m_lin_speeds.erase(last_m_lin_speeds.begin());
-    double sum = std::accumulate(last_m_lin_speeds.begin(), last_m_lin_speeds.end(), 0.0);
-    lin_speed = sum / last_m_lin_speeds.size();
-
-    last_m_ang_speeds.push_back(ang_speed);
-    if (last_m_ang_speeds.size()>4)
-        last_m_ang_speeds.erase(last_m_ang_speeds.begin());
-    double sum2 = std::accumulate(last_m_ang_speeds.begin(), last_m_ang_speeds.end(), 0.0);
-    ang_speed = sum2 / last_m_ang_speeds.size();
-    */
 }
 
 } /* namespace rf2o */

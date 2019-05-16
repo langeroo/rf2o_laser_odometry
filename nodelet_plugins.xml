@@ -1,0 +1,7 @@
+<library path="lib/librf2o_laser_odometry_nodelet">
+  <class name="rf2o_laser_odometry/rf2oNodelet" type="rf2o_laser_odometry::rf2oNodelet" base_class_type="nodelet::Nodelet">
+  <description>
+    rf2o nodelet implementation
+  </description>
+  </class>
+</library>
